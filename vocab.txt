@@ -1,0 +1,9 @@
+[CLS]
+[SEP]
+i
+am
+a
+ba
+##na
+!
+[UNK]

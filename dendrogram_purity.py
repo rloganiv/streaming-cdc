@@ -98,7 +98,7 @@ def main(args):
         root = load_dendrogram(f)
     p_star = num_pairs(metadata, args.cluster_by)
     summand = accumulate_purity(root, metadata, args.cluster_by)
-    print(f'Dendrogram Purity: {p_star / summand: 0.4f}')
+    print(f'Dendrogram Purity: {summand / p_star: 0.4f}')
 
 
 if __name__ == '__main__':

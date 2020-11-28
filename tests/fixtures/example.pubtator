@@ -1,0 +1,9 @@
+1234|t|Title 1
+1234|a|Abstract 1
+1234	0	1	T	T1,T2	C00
+1234	2	3	t	T3	C01
+
+2345|t|Title 2
+2345|a|Abstract 2
+2345	0	2	Ti	T1,T3	C02
+

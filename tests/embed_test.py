@@ -4,13 +4,13 @@ import unittest
 import torch
 import transformers
 
-import medmentions
-import embed
+from meercat import medmentions
+from meercat import embed
 
 
 class MentionTokenizerTest(unittest.TestCase):
     def test_call(self):
-        tokenizer = transformers.BertTokenizer('vocab.txt')
+        tokenizer = transformers.BertTokenizer('tests/fixtures/vocab.txt')
         mention_tokenizer = embed.MentionTokenizer(tokenizer)
 
         text = 'I am a banana!'

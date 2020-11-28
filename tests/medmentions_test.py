@@ -1,7 +1,7 @@
 import io
 import unittest
 
-import medmentions
+from meercat import medmentions
 
 
 example = '''1234|t|Title 1
@@ -20,7 +20,7 @@ class ParseTest(unittest.TestCase):
 
     def test_parse(self):
         f = io.StringIO(example)
-        documents = list(medmentions.parse(f))
+        documents = list(medmentions.parse_pubtator(f))
         self.assertEqual(len(documents), 2)
 
         document = documents[0]

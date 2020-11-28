@@ -8,7 +8,7 @@ import csv
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-import medmentions
+from meercat import medmentions
 
 
 @dataclass

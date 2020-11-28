@@ -1,7 +1,7 @@
 import io
 import unittest
 
-import dendrogram_purity
+from meercat import dendrogram_purity
 
 tree_tsv = '''0	None	None
 a	0	None

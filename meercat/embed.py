@@ -5,7 +5,7 @@ import logging
 import torch
 import transformers
 
-import medmentions
+from meercat import medmentions
 
 
 logger = logging.getLogger(__name__)

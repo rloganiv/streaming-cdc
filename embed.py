@@ -39,27 +39,31 @@ class MentionTokenizer:
         excess = length - max_length
         if excess > 0:
             # Start with a symmetric window
-            left_size = right_size = excess // 2
-            
+            slack = max_length - len(center_tokens)
+            left_size = slack // 2
+            right_size = slack // 2
+
             # Distribute any remaining space
             if left_size > len(prefix_tokens):
                 right_size += left_size - len(prefix_tokens)
-            if right_size > len(suffix_tokens):
+                left_size = len(prefix_tokens)
+            elif right_size > len(suffix_tokens):
                 left_size += right_size - len(suffix_tokens)
+                right_size = len(suffix_tokens)
 
             # Truncate
             prefix_tokens = prefix_tokens[-left_size:]
             suffix_tokens = suffix_tokens[:right_size]
 
         # Add special tokens.
-        if self.tokenizer.bos_token is not None:
-            prefix_tokens.insert(0, self.tokenizer.bos_token)
-        elif self.tokenizer.cls_token is not None:
+        # if self.tokenizer.bos_token is not None:
+        #     prefix_tokens.insert(0, self.tokenizer.bos_token)
+        if self.tokenizer.cls_token is not None:
             prefix_tokens.insert(0, self.tokenizer.cls_token)
 
-        if self.tokenizer.eos_token is not None:
-            suffix_tokens.append(self.tokenizer.eos_token)
-        elif self.tokenizer.sep_token is not None:
+        # if self.tokenizer.eos_token is not None:
+        #     suffix_tokens.append(self.tokenizer.eos_token)
+        if self.tokenizer.sep_token is not None:
             suffix_tokens.append(self.tokenizer.sep_token)
 
         # Encode tokens and get mention mask
@@ -115,7 +119,6 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--model-name', type=str, required=True)
     parser.add_argument('--cuda', action='store_true')
     args = parser.parse_args()
-    print(args)
 
     main(args)
 

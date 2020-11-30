@@ -7,7 +7,6 @@ import transformers
 from transformers.file_utils import ModelOutput
 
 
-
 class LinkerOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     scores: torch.FloatTensor = None
@@ -66,25 +65,34 @@ class RelicModel(transformers.BertPreTrainedModel):
         context_embedding = context_embedding
 
         if labels is not None:
-            # TODO(@rloganiv): If batch sizes are too small, we probably want
-            # to sample outside of the batch as well.
+            # TODO(@rloganiv): Make magic number (neg samples) part of config
+            # or something. Also maybe add an option for full linking.
             # (num_entities[subsampled], embedding_dim)
-            entity_embeddings = self.entity_embeddings(labels)
+            upper_bound = self.entity_embeddings.num_embeddings
+            negative_samples = torch.randint(
+                upper_bound,
+                size=(labels.size(0), 2047),
+                device=labels.device,
+            )
+            negative_samples[negative_samples == labels.unsqueeze(-1)] = 0
+            indices = torch.cat((labels.unsqueeze(-1), negative_samples), dim=-1)
+            entity_embeddings = self.entity_embeddings(indices)
         else:
             # (num_entities, embedding_dim)
             entity_embeddings = self.entity_embeddings.weight
         entity_embeddings = F.normalize(entity_embeddings, dim=-1)
 
         # (batch_size, num_entities)
-        scores = self.scaling_constant * torch.mm(
+        scores = self.scaling_constant * torch.einsum(
+            'bd,bsd->bs',
             context_embedding,
-            entity_embeddings.transpose(0, 1),
+            entity_embeddings,
         )
 
         loss = None
         if labels is not None:
             log_probs = F.log_softmax(scores, dim=-1)
-            loss = -torch.diag(log_probs).mean()
+            loss = -log_probs[:,0].mean()
 
         if not return_dict:
             output = (scores,) + outputs[2:]

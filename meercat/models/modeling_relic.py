@@ -40,7 +40,8 @@ class RelicModel(transformers.BertPreTrainedModel):
         labels=None,
         output_attentions=None,
         output_hidden_states=None,
-        return_dict=None
+        return_dict=None,
+        counts=None,
     ):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -69,11 +70,21 @@ class RelicModel(transformers.BertPreTrainedModel):
             # or something. Also maybe add an option for full linking.
             # (num_entities[subsampled], embedding_dim)
             upper_bound = self.entity_embeddings.num_embeddings
-            negative_samples = torch.randint(
-                upper_bound,
-                size=(labels.size(0), 2047),
-                device=labels.device,
-            )
+            if counts is None:
+                negative_samples = torch.randint(
+                    upper_bound,
+                    size=(labels.size(0), 2047),
+                    device=labels.device,
+                )
+            else:
+                counts = counts.unsqueeze(0).repeat(
+                    (labels.size(0), 1),
+                )
+                negative_samples = torch.multinomial(
+                    counts,
+                    num_samples=2047,
+                    replacement=False
+                )
             negative_samples[negative_samples == labels.unsqueeze(-1)] = 0
             indices = torch.cat((labels.unsqueeze(-1), negative_samples), dim=-1)
             entity_embeddings = self.entity_embeddings(indices)

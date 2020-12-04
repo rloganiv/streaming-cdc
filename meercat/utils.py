@@ -1,3 +1,4 @@
+import csv
 import json
 import logging
 import os
@@ -28,9 +29,10 @@ def add_mention_seps(
 
 
 class EntityTokenizer:
-    def __init__(self, entities):
+    def __init__(self, entities, counts):
         self.idx_to_entity = entities
         self.entity_to_idx = {x: i for i, x in enumerate(entities)}
+        self.counts = counts
 
     def __len__(self):
         return len(self.idx_to_entity)
@@ -45,16 +47,22 @@ class EntityTokenizer:
         assert os.path.isdir(save_directory), 'save_directory is not a directory.'
         output_path = os.path.join(save_directory, ENTITY_VOCAB_FILENAME)
         with open(output_path, 'w') as g:
-            for entity in self.idx_to_entity:
-                g.write(entity + '\n')
+            writer = csv.writer(g)
+            for entity, count in zip(self.idx_to_entity, self.counts):
+                writer.writerow((entity, count))
 
     @classmethod
     def from_pretrained(cls, path):
         if os.path.isdir(path):
             path = os.path.join(path, ENTITY_VOCAB_FILENAME)
+        entities = []
+        counts = []
         with open(path, 'r') as f:
-            entities = [line.strip() for line in f]
-        return cls(entities)
+            reader = csv.reader(f)
+            for entity, count in reader:
+                entities.append(entity)
+                counts.append(int(count))
+        return cls(entities, counts)
 
 
 def _encode_mention(data, tokenizer):

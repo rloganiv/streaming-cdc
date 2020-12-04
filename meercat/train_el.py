@@ -52,6 +52,7 @@ def main(args):
     else:
         entity_vocab = args.model_name
     entity_tokenizer = utils.EntityTokenizer.from_pretrained(entity_vocab)
+    counts = torch.tensor(entity_tokenizer.counts, device=device, dtype=torch.float32)
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
     logger.info('Adding separators to tokenizer')
@@ -134,7 +135,7 @@ def main(args):
             n_iter += 1
             model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
             with torch.cuda.amp.autocast(enabled=args.fp16):
-                loss, logits, *_ = model(**model_inputs)
+                loss, logits, *_ = model(**model_inputs, counts=counts)
                 total_loss += (loss * logits.size(0)).detach()
                 loss /= args.accumulation_steps  # fp16 adjustment
             total += logits.size(0)
@@ -145,7 +146,7 @@ def main(args):
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-            if not i % 100:
+            if not i % 100 and i != 0:
                 # If distrubuted, then need to accumulate results across
                 # processes.
                 if args.local_rank != -1:
@@ -155,6 +156,10 @@ def main(args):
                 if is_main_process:
                     writer.add_scalar('Loss/train', (total_loss / (total + 1e-13)).item(), n_iter)
                     writer.add_scalar('Accuracy/train', (correct / (total + 1e-13)).item(), n_iter)
+                # Reset accumulators
+                correct = torch.tensor(0.0, device=device)
+                total = torch.tensor(0.0, device=device)
+                total_loss = torch.tensor(0.0, device=device)
 
         # Eval loop
         model.eval()
@@ -166,7 +171,7 @@ def main(args):
         for model_inputs in dev_loader:
             model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
             with torch.no_grad():
-                loss, logits, *_ = model(**model_inputs)
+                loss, logits, *_ = model(**model_inputs, counts=counts)
                 _, preds = torch.max(logits, dim=-1)
                 correct += preds.eq(0).sum()
                 total += preds.size(0)

@@ -6,6 +6,8 @@ format, this script serializes the data as a JSONL file where each line is a
 mention.
 """
 import argparse
+import collections
+import csv
 import json
 import logging
 
@@ -25,9 +27,9 @@ def main(args):
         test_pmids = set(line.strip() for line in f)
 
     logger.info('Creating jsonl files')
-    entity_ids_train = set()
-    entity_ids_dev = set()
-    entity_ids_test = set()
+    entity_ids_train = collections.Counter()
+    entity_ids_dev = collections.Counter()
+    entity_ids_test = collections.Counter()
     with open(args.pubtator_file, 'r') as f, \
          open(args.prefix + 'train.jsonl', 'w') as g_train, \
          open(args.prefix + 'dev.jsonl', 'w') as g_dev, \
@@ -55,21 +57,19 @@ def main(args):
                     'type': mention.semantic_types,
                 }
                 g.write(json.dumps(json_obj) + '\n')
-                entity_ids.add(mention.entity_id)
+                entity_ids[mention.entity_id] += 1
 
     logger.info('Serializing entity vocab')
-    entity_ids_all = set.union(
-        entity_ids_train,
-        entity_ids_dev,
-        entity_ids_test,
-    )
+    counts = sorted(entity_ids_train.items(), key=lambda x: x[1], reverse=True)
     with open(args.prefix + 'entity_vocab.txt', 'w') as g:
-        for entity_id in entity_ids_all:
-            g.write(entity_id + '\n')
+        writer = csv.writer(g)
+        writer.writerow(('[PAD]', 0))
+        for entity_id, count in counts:
+            writer.writerow((entity_id, count))
 
-    logger.info(f'Unique Entities: {len(entity_ids_all)}')
-    logger.info(f'Unseen Dev Entities: {len(entity_ids_dev - entity_ids_train)}')
-    logger.info(f'Unseen Test Entities: {len(entity_ids_test - entity_ids_train)}')
+    # logger.info(f'Unique Entities: {len(entity_ids_all)}')
+    # logger.info(f'Unseen Dev Entities: {len(entity_ids_dev - entity_ids_train)}')
+    # logger.info(f'Unseen Test Entities: {len(entity_ids_test - entity_ids_train)}')
 
 
 if __name__ == '__main__':

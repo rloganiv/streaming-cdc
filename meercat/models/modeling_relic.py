@@ -105,14 +105,14 @@ class RelicModel(transformers.BertPreTrainedModel):
             log_probs = F.log_softmax(scores, dim=-1)
             loss = -log_probs[:,0].mean()
 
-        if not return_dict:
-            output = (scores,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
+        # if not return_dict:
+        output = (scores,) + outputs[2:]
+        return ((loss,) + output) if loss is not None else output
 
-        return LinkerOutput(
-            loss=loss,
-            scores=scores,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        # return LinkerOutput(
+            # loss=loss,
+            # scores=scores,
+            # hidden_states=outputs.hidden_states,
+            # attentions=outputs.attentions,
+        # )
 

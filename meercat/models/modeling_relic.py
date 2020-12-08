@@ -83,11 +83,13 @@ class RelicModel(transformers.BertPreTrainedModel):
                 negative_samples = torch.multinomial(
                     counts,
                     num_samples=2047,
-                    replacement=False
+                    replacement=False,
                 )
             negative_samples[negative_samples == labels.unsqueeze(-1)] = 0
             indices = torch.cat((labels.unsqueeze(-1), negative_samples), dim=-1)
+            indices = indices.to(self.entity_embeddings.weight.device)  # Handles model parallel?
             entity_embeddings = self.entity_embeddings(indices)
+            entity_embeddings = entity_embeddings.to(input_ids.device)  # Handles model parallel?
         else:
             # (num_entities, embedding_dim)
             entity_embeddings = self.entity_embeddings.weight

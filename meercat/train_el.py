@@ -32,8 +32,14 @@ def main(args):
     # Handle multi-GPU setup
     world_size = None
     if args.local_rank == -1:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if args.model_parallel:
+            embedding_device = torch.device('cuda:0')
+            device = torch.device('cuda:1')
+        else:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     else:
+        if args.model_parallel:
+            raise RuntimeError('Cannot use model parallel w/ data parallel')
         device = torch.device('cuda', args.local_rank)
         torch.distributed.init_process_group(
             backend='nccl',
@@ -74,6 +80,8 @@ def main(args):
     )
     model.resize_token_embeddings(len(tokenizer))  # Opt. resize for entity separators
     model.to(device)
+    if args.model_parallel:
+        model.entity_embeddings.to(embedding_device)
     if args.local_rank != -1:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
@@ -253,6 +261,7 @@ if __name__ == '__main__':
 
     # Distributed
     parser.add_argument('--local_rank', type=int, default=-1)
+    parser.add_argument('--model_parallel', action='store_true')
 
     args = parser.parse_args()
 

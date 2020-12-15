@@ -25,6 +25,7 @@ setuptools.setup(
     packages=setuptools.find_packages(),
     install_requires=[
         'transformers>=4.0.0',
+        'neleval>=3.1.1',
     ],
     extras_require={
         'test': ['pytest']

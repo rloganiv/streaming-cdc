@@ -7,7 +7,6 @@ import pickle
 import torch
 from tqdm import tqdm
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +37,10 @@ class EntityTokenizer:
         return len(self.idx_to_entity)
 
     def __call__(self, entity_id):
+        if entity_id not in self.entity_to_idx:
+            logger.warning('Adding entity to vocabulary: %s.', entity_id)
+            self.entity_to_idx[entity_id] = len(self.entity_to_idx)
+            self.idx_to_entity.append(entity_id)
         return self.entity_to_idx[entity_id]
 
     def save_pretrained(

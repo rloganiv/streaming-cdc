@@ -6,6 +6,8 @@ import torch
 import transformers
 
 from meercat import medmentions
+from meercat.nn_thresh import cluster
+from meercat.utils import EntityTokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -83,12 +85,19 @@ def main(args):
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+    cpu_device = torch.device('cpu')
 
     model = transformers.AutoModel.from_pretrained(args.model_name)
     model.to(device)
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model_name)
     mention_tokenizer = MentionTokenizer(tokenizer)
+    entity_tokenizer = EntityTokenizer.from_pretrained(args.entity_vocab)
 
+    embeddings = torch.empty(args.num_mentions, model.config.hidden_size)
+    true_labels = []
+
+    j = 0
+    logger.info('Embedding')
     with open(args.dataset_path, 'r') as f:
         for document in medmentions.parse_pubtator(f):
             text = ' '.join((document.title, document.abstract))
@@ -99,23 +108,35 @@ def main(args):
                 inputs, mention_mask = mention_tokenizer(mention, text)
                 inputs.to(device)
                 mention_mask.to(device)
-                hidden, *_ = model(**inputs)
-                embedding = hidden[mention_mask].mean(0)
+                with torch.no_grad():
+                    hidden, *_ = model(**inputs)
+                    embedding = hidden[mention_mask].mean(0)
+                embeddings[j] = embedding.to(cpu_device)
+
+                true_clusters.append(entity_tokenizer(mention.entity_id))
 
                 # Serialize.
-                mention_id = f'{pmid}_{i}'
-                embedding_string = '\t'.join(str(x) for x in embedding.tolist())
-                serialized = '\t'.join((mention_id, 'NA', embedding_string))
-                print(serialized)
+                # mention_id = f'{pmid}_{i}'
+                # embedding_string = '\t'.join(str(x) for x in embedding.tolist())
+                # serialized = '\t'.join((mention_id, 'NA', embedding_string))
+                # print(serialized)
+    logger.info('Clustering')
+    pred_clusters = cluster(embeddings, args.threshold)
+    for t, p in zip(true_clusters, pred_clusters):
+        print('%i, %i' % (t.item(), p.item()))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--dataset-path', type=str)
-    parser.add_argument('-m', '--model-name', type=str, required=True)
+    parser.add_argument('-d', '--dataset_path', type=str)
+    parser.add_argument('-m', '--model_name', type=str, required=True)
+    parser.add_argument('--entity_vocab', type=str, required=True)
+    parser.add_argument('--num_mentions', type=int, required=True)
     parser.add_argument('--cuda', action='store_true')
+    parser.add_argument('--threshold', type=float, default=0.24)
     args = parser.parse_args()
-    print(args)
+
+    logging.basicConfig(level=logging.INFO)
 
     main(args)
 

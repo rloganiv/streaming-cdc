@@ -92,7 +92,9 @@ class RelicModel(transformers.BertPreTrainedModel):
             entity_embeddings = entity_embeddings.to(input_ids.device)  # Handles model parallel?
         else:
             # (num_entities, embedding_dim)
-            entity_embeddings = self.entity_embeddings.weight
+            # entity_embeddings = self.entity_embeddings.weight
+            # TODO: Something less hacky
+            entity_embeddings = context_embedding.clone().unsqueeze(1)
         entity_embeddings = F.normalize(entity_embeddings, dim=-1)
 
         # (batch_size, num_entities)
@@ -108,7 +110,7 @@ class RelicModel(transformers.BertPreTrainedModel):
             loss = -log_probs[:,0].mean()
 
         # if not return_dict:
-        output = (scores,) + outputs[2:]
+        output = (scores, context_embedding) # + outputs[2:]
         return ((loss,) + output) if loss is not None else output
 
         # return LinkerOutput(

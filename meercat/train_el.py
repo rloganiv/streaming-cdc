@@ -13,6 +13,7 @@ import torch
 import transformers
 from tqdm import tqdm
 
+from meercat.nn_thresh import cluster
 from meercat.models import RelicConfig, RelicModel
 import meercat.utils as utils
 
@@ -151,91 +152,117 @@ def main(args):
     logger.info('Starting training')
     best_dev_accuracy = 0
     n_iter = 0
-    for epoch in range(args.epochs):
-        logger.info('Epoch: %s', epoch)
-        # if args.local_rank != -1:
-            # train_sampler.set_epoch(epoch)
+    if not args.skip_train:
+        for epoch in range(args.epochs):
+            logger.info('Epoch: %s', epoch)
+            # if args.local_rank != -1:
+                # train_sampler.set_epoch(epoch)
 
-        # Train loop
-        model.train()
-        optimizer.zero_grad()
-        correct = torch.tensor(0.0, device=device)
-        total = torch.tensor(0.0, device=device)
-        total_loss = torch.tensor(0.0, device=device)
-        if args.local_rank in [-1, 0]:
-            train_loader = tqdm(train_loader, file=sys.stdout)
-        for i, model_inputs in enumerate(train_loader):
-            n_iter += 1
-            model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
-            with torch.cuda.amp.autocast(enabled=args.fp16):
-                loss, logits, *_ = model(**model_inputs, counts=counts)
-                total_loss += (loss * logits.size(0)).detach()
-                loss /= args.accumulation_steps  # fp16 adjustment
-            total += logits.size(0)
-            _, preds = torch.max(logits, dim=-1)
-            correct += preds.eq(0).sum()
-            if i % args.accumulation_steps == 0:
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-            if not i % 100 and i != 0:
-                # If distrubuted, then need to accumulate results across
-                # processes.
-                if args.local_rank != -1:
-                    torch.distributed.reduce(total_loss, 0)
-                    torch.distributed.reduce(correct, 0)
-                    torch.distributed.reduce(total, 0)
-                if is_main_process:
-                    writer.add_scalar('Loss/train', (total_loss / (total + 1e-13)).item(), n_iter)
-                    writer.add_scalar('Accuracy/train', (correct / (total + 1e-13)).item(), n_iter)
-                # Reset accumulators
-                correct = torch.tensor(0.0, device=device)
-                total = torch.tensor(0.0, device=device)
-                total_loss = torch.tensor(0.0, device=device)
-
-        # Eval loop
-        model.eval()
-        correct = torch.tensor(0.0, device=device)
-        total = torch.tensor(0.0, device=device)
-        total_loss = torch.tensor(0.0, device=device)
-        if args.local_rank in [-1, 0]:
-            dev_loader = tqdm(dev_loader, file=sys.stdout)
-        for model_inputs in dev_loader:
-            model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
-            with torch.no_grad():
-                loss, logits, *_ = model(**model_inputs, counts=counts)
+            # Train loop
+            model.train()
+            optimizer.zero_grad()
+            correct = torch.tensor(0.0, device=device)
+            total = torch.tensor(0.0, device=device)
+            total_loss = torch.tensor(0.0, device=device)
+            if args.local_rank in [-1, 0]:
+                train_loader = tqdm(train_loader, file=sys.stdout)
+            for i, model_inputs in enumerate(train_loader):
+                n_iter += 1
+                model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
+                with torch.cuda.amp.autocast(enabled=args.fp16):
+                    loss, logits, *_ = model(**model_inputs, counts=counts)
+                    total_loss += (loss * logits.size(0)).detach()
+                    loss /= args.accumulation_steps  # fp16 adjustment
+                total += logits.size(0)
                 _, preds = torch.max(logits, dim=-1)
                 correct += preds.eq(0).sum()
-                total += preds.size(0)
-                total_loss += loss * preds.size(0)
+                if i % args.accumulation_steps == 0:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                if not i % 100 and i != 0:
+                    # If distrubuted, then need to accumulate results across
+                    # processes.
+                    if args.local_rank != -1:
+                        torch.distributed.reduce(total_loss, 0)
+                        torch.distributed.reduce(correct, 0)
+                        torch.distributed.reduce(total, 0)
+                    if is_main_process:
+                        writer.add_scalar('Loss/train', (total_loss / (total + 1e-13)).item(), n_iter)
+                        writer.add_scalar('Accuracy/train', (correct / (total + 1e-13)).item(), n_iter)
+                    # Reset accumulators
+                    correct = torch.tensor(0.0, device=device)
+                    total = torch.tensor(0.0, device=device)
+                    total_loss = torch.tensor(0.0, device=device)
 
-        # Gather accuracy accross processes
-        if args.local_rank != -1:
-            torch.distributed.reduce(total_loss, 0)
-            torch.distributed.reduce(correct, 0)
-            torch.distributed.reduce(total, 0)
-        accuracy = (correct / total).item()
-        total_loss = (total_loss / total).item()
-        if is_main_process:
-            writer.add_scalar('Loss/dev', total_loss, epoch)
-            writer.add_scalar('Accuracy/dev', accuracy, epoch)
+            # Eval loop
+            model.eval()
+            correct = torch.tensor(0.0, device=device)
+            total = torch.tensor(0.0, device=device)
+            total_loss = torch.tensor(0.0, device=device)
+            if args.local_rank in [-1, 0]:
+                dev_loader = tqdm(dev_loader, file=sys.stdout)
+            for model_inputs in dev_loader:
+                model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
+                with torch.no_grad():
+                    loss, logits, *_ = model(**model_inputs, counts=counts)
+                    _, preds = torch.max(logits, dim=-1)
+                    correct += preds.eq(0).sum()
+                    total += preds.size(0)
+                    total_loss += loss * preds.size(0)
 
-        # Serialize if best
-        if accuracy > best_dev_accuracy:
-            logger.info('Best dev accuracy so far. Saving.')
-            if args.local_rank == -1:
-                model.save_pretrained(args.output_dir)
-            elif args.local_rank == 0:
-                model.module.save_pretrained(args.output_dir)
+            # Gather accuracy accross processes
+            if args.local_rank != -1:
+                torch.distributed.reduce(total_loss, 0)
+                torch.distributed.reduce(correct, 0)
+                torch.distributed.reduce(total, 0)
+            accuracy = (correct / total).item()
+            total_loss = (total_loss / total).item()
             if is_main_process:
-                config.save_pretrained(args.output_dir)
-                tokenizer.save_pretrained(args.output_dir)
-                entity_tokenizer.save_pretrained(args.output_dir)
-        best_dev_accuracy = max(best_dev_accuracy, accuracy)
+                writer.add_scalar('Loss/dev', total_loss, epoch)
+                writer.add_scalar('Accuracy/dev', accuracy, epoch)
+
+            # Serialize if best
+            if accuracy > best_dev_accuracy:
+                logger.info('Best dev accuracy so far. Saving.')
+                if args.local_rank == -1:
+                    model.save_pretrained(args.output_dir)
+                elif args.local_rank == 0:
+                    model.module.save_pretrained(args.output_dir)
+                if is_main_process:
+                    config.save_pretrained(args.output_dir)
+                    tokenizer.save_pretrained(args.output_dir)
+                    entity_tokenizer.save_pretrained(args.output_dir)
+            best_dev_accuracy = max(best_dev_accuracy, accuracy)
 
     # Final test loop
-    pass
+    # TODO: Find a way to fill a pre-allocated tensor instead of concatenating
+    # TODO: Also, the label popping below is problematic, need a smoother way
+    # of handling unseen entities (both by the model and by the tokenizer).
+    logger.info('Evaluating test data')
+    model.eval()
+    embeddings = []
+    true_clusters = []
+    if not args.skip_eval:
+        for model_inputs in test_loader:
+            model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
+            labels = model_inputs.pop('labels')
+            with torch.no_grad():
+                embedding = model(**model_inputs, counts=counts)[1]
+            embeddings.append(embedding.to('cpu'))
+            true_clusters.append(labels)
+    embeddings = torch.cat(embeddings, dim=0)
+    true_clusters = torch.cat(true_clusters, dim=0)
+    # for i, (true_cluster, embedding) in enumerate(zip(true_clusters, embeddings)):
+        # embedding_str = '\t'.join(str(i) for i in embedding.tolist())
+        # print(f'{i}\t{true_cluster.item()}\t{embedding_str}')
+
+    logger.info('Clustering embeddings')
+    pred_clusters = cluster(embeddings, threshold=args.threshold)
+
+    for t, p in zip(true_clusters, pred_clusters):
+        print('%i, %i' % (t.item(), p.item()))
 
 
 if __name__ == '__main__':
@@ -258,6 +285,13 @@ if __name__ == '__main__':
     parser.add_argument('--entity_embedding_dim', type=int, required=True)
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--entity_vocab', type=str, default=None)
+
+    # Control Flow
+    parser.add_argument('--skip_train', action='store_true')
+    parser.add_argument('--skip_eval', action='store_true')
+
+    # Clustering
+    parser.add_argument('--threshold', type=float, default=0.76)
 
     # Distributed
     parser.add_argument('--local_rank', type=int, default=-1)

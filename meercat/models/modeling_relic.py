@@ -28,6 +28,9 @@ class RelicModel(transformers.BertPreTrainedModel):
             num_embeddings=config.entity_vocab_size,
             embedding_dim=config.entity_embedding_dim,
         )
+        torch.nn.init.normal_(self.entity_embeddings.weight, std=0.02)  # Std. from Nick
+        self.use_batch_negatives = config.use_batch_negatives
+        self.random_negatives = config.random_negatives
 
     def forward(
         self,
@@ -69,24 +72,35 @@ class RelicModel(transformers.BertPreTrainedModel):
             # TODO(@rloganiv): Make magic number (neg samples) part of config
             # or something. Also maybe add an option for full linking.
             # (num_entities[subsampled], embedding_dim)
-            upper_bound = self.entity_embeddings.num_embeddings
-            if counts is None:
-                negative_samples = torch.randint(
-                    upper_bound,
-                    size=(labels.size(0), 2047),
-                    device=labels.device,
-                )
-            else:
-                counts = counts.unsqueeze(0).repeat(
+            negatives = []
+            if self.use_batch_negatives:
+                batch_negatives = labels.unsqueeze(0).repeat(
                     (labels.size(0), 1),
                 )
-                negative_samples = torch.multinomial(
-                    counts,
-                    num_samples=2047,
-                    replacement=False,
-                )
-            negative_samples[negative_samples == labels.unsqueeze(-1)] = 0
-            indices = torch.cat((labels.unsqueeze(-1), negative_samples), dim=-1)
+                # Ensure that true label cannot be a negative sample
+                batch_negatives[batch_negatives == labels.unsqueeze(-1)] = 0
+                negatives.append(batch_negatives)
+            if self.random_negatives > 0:
+                upper_bound = self.entity_embeddings.num_embeddings
+                if counts is None:
+                    random_samples = torch.randint(
+                        upper_bound,
+                        size=(labels.size(0), 2047),
+                        device=labels.device,
+                    )
+                else:
+                    counts = counts.unsqueeze(0).repeat(
+                        (labels.size(0), 1),
+                    )
+                    random_samples = torch.multinomial(
+                        counts,
+                        num_samples=self.random_negatives,
+                        replacement=False,
+                    )
+                # Ensure that true label cannot be a random sample
+                random_samples[random_samples == labels.unsqueeze(-1)] = 0
+                negatives.append(random_samples)
+            indices = torch.cat((labels.unsqueeze(-1), *negatives), dim=-1)
             indices = indices.to(self.entity_embeddings.weight.device)  # Handles model parallel?
             entity_embeddings = self.entity_embeddings(indices)
             entity_embeddings = entity_embeddings.to(input_ids.device)  # Handles model parallel?

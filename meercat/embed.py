@@ -1,5 +1,6 @@
 """Transformer embeddings of MedMentions"""
 import argparse
+import json
 import logging
 
 import torch
@@ -19,61 +20,63 @@ class MentionTokenizer:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
-    def __call__(self, mention, text):
+    def __call__(self, left_context, mention, right_context):
         # Break text into relevant chunks
-        prefix = text[:mention.start]
-        center = text[mention.start:mention.end]
-        suffix = text[mention.end:]
+        # prefix = text[:mention.start]
+        # center = text[mention.start:mention.end]
+        # suffix = text[mention.end:]
 
         # Tokenize text
         # TODO(rloganiv): The suffix tokenizer will not create correct
         # wordpieces if the suffix is part of the same word as the mention.
         # I don't know if there is a generic, principled way to deal with this
         # but it is worth being aware of.
-        prefix_tokens = self.tokenizer.tokenize(prefix)
-        center_tokens = self.tokenizer.tokenize(center)
-        suffix_tokens = self.tokenizer.tokenize(suffix)
+        left_context = self.tokenizer.tokenize(left_context)
+        mention = self.tokenizer.tokenize(mention)
+        right_context = self.tokenizer.tokenize(right_context)
 
         # If max length exceeded then create as big a window as possible around
         # the mention.
-        length = len(prefix_tokens) + len(center_tokens) + len(suffix_tokens)
-        max_length = self.tokenizer.max_len_single_sentence
+        length = len(left_context) + len(mention) + len(right_context) + 2
+        max_length = 512 # self.tokenizer.max_len_single_sentence
         excess = length - max_length
         if excess > 0:
             # Start with a symmetric window
-            left_size = right_size = excess // 2
+            left_size = right_size = (max_length - len(mention)) // 2 - 1
             
             # Distribute any remaining space
-            if left_size > len(prefix_tokens):
-                right_size += left_size - len(prefix_tokens)
-            if right_size > len(suffix_tokens):
-                left_size += right_size - len(suffix_tokens)
+            if left_size > len(left_context):
+                right_size += left_size - len(left_context)
+                left_size = len(left_context)
+            elif right_size > len(right_context):
+                left_size += right_size - len(right_context)
+                right_size = len(right_context)
 
             # Truncate
-            prefix_tokens = prefix_tokens[-left_size:]
-            suffix_tokens = suffix_tokens[:right_size]
+            left_context = left_context[-left_size:]
+            right_context = right_context[:right_size]
 
         # Add special tokens.
         if self.tokenizer.bos_token is not None:
-            prefix_tokens.insert(0, self.tokenizer.bos_token)
+            left_context.insert(0, self.tokenizer.bos_token)
         elif self.tokenizer.cls_token is not None:
-            prefix_tokens.insert(0, self.tokenizer.cls_token)
+            left_context.insert(0, self.tokenizer.cls_token)
 
         if self.tokenizer.eos_token is not None:
-            suffix_tokens.append(self.tokenizer.eos_token)
+            right_context.append(self.tokenizer.eos_token)
         elif self.tokenizer.sep_token is not None:
-            suffix_tokens.append(self.tokenizer.sep_token)
+            right_context.append(self.tokenizer.sep_token)
 
         # Encode tokens and get mention mask
-        tokens = prefix_tokens + center_tokens + suffix_tokens
+        tokens = left_context + mention + right_context
         inputs = self.tokenizer.encode_plus(
             text=tokens,
             add_special_tokens=False,
             return_tensors='pt',
         )
         mention_mask = torch.zeros(len(tokens), dtype=torch.bool)
-        mention_start = len(prefix_tokens)
-        mention_end = mention_start + len(center_tokens)
+        mention_start = len(left_context)
+        mention_end = mention_start + len(mention)
         mention_mask[mention_start:mention_end] = 1
         mention_mask.unsqueeze_(0)
 
@@ -93,47 +96,45 @@ def main(args):
     mention_tokenizer = MentionTokenizer(tokenizer)
     entity_tokenizer = EntityTokenizer.from_pretrained(args.entity_vocab)
 
-    embeddings = torch.empty(args.num_mentions, model.config.hidden_size)
-    true_labels = []
-
     j = 0
     logger.info('Embedding')
-    with open(args.dataset_path, 'r') as f:
-        for document in medmentions.parse_pubtator(f):
-            text = ' '.join((document.title, document.abstract))
-            pmid = document.pmid
-            for i, mention in enumerate(document.mentions):
-                # Compute embedding by taking average of mention
-                # representations.
-                inputs, mention_mask = mention_tokenizer(mention, text)
-                inputs.to(device)
-                mention_mask.to(device)
-                with torch.no_grad():
-                    hidden, *_ = model(**inputs)
-                    embedding = hidden[mention_mask].mean(0)
-                embeddings[j] = embedding.to(cpu_device)
+    with open(args.input, 'r') as f, \
+         open(args.output, 'w') as g:
+        for i, line in enumerate(f):
+            data = json.loads(line)
+            # Compute embedding by taking average of mention
+            # representations.
+            inputs, mention_mask = mention_tokenizer(
+                left_context=data['left_context'],
+                mention=data['mention'],
+                right_context=data['right_context'],
+            )
+            inputs.to(device)
+            mention_mask.to(device)
+            with torch.no_grad():
+                hidden, *_ = model(**inputs)
+                embedding = hidden[mention_mask].mean(0)
+            # embeddings[j] = embedding.to(cpu_device)
 
-                true_clusters.append(entity_tokenizer(mention.entity_id))
-
-                # Serialize.
-                # mention_id = f'{pmid}_{i}'
-                # embedding_string = '\t'.join(str(x) for x in embedding.tolist())
-                # serialized = '\t'.join((mention_id, 'NA', embedding_string))
-                # print(serialized)
-    logger.info('Clustering')
-    pred_clusters = cluster(embeddings, args.threshold)
-    for t, p in zip(true_clusters, pred_clusters):
-        print('%i, %i' % (t.item(), p.item()))
+            # Serialize.
+            # mention_id = f'{pmid}_{i}'
+            entity_id = entity_tokenizer(data['entity_id'])
+            embedding_string = '\t'.join(str(x) for x in embedding.tolist())
+            serialized = f'{i}\t{entity_id}\t{embedding_string}\n'
+            g.write(serialized)
+    # logger.info('Clustering')
+    # pred_clusters = cluster(embeddings, args.threshold)
+    # for t, p in zip(true_clusters, pred_clusters):
+        # print('%i, %i' % (t.item(), p.item()))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--dataset_path', type=str)
+    parser.add_argument('--input', type=str, required=True)
+    parser.add_argument('--output', type=str, required=True)
     parser.add_argument('-m', '--model_name', type=str, required=True)
     parser.add_argument('--entity_vocab', type=str, required=True)
-    parser.add_argument('--num_mentions', type=int, required=True)
     parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('--threshold', type=float, default=0.24)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)

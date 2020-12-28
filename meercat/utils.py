@@ -1,8 +1,10 @@
 import csv
+import itertools
 import json
 import logging
 import os
 import pickle
+import random
 
 import torch
 from tqdm import tqdm
@@ -19,12 +21,15 @@ def add_mention_seps(
     tokenizer,
 ):
     """Adds entity mention seperator tokens if needed."""
-    start_id = tokenizer.convert_tokens_to_ids(ENTITY_MENTION_START)
-    if start_id == tokenizer.unk_token_id:
-        tokenizer.add_tokens(ENTITY_MENTION_START)
-    end_id = tokenizer.convert_tokens_to_ids(ENTITY_MENTION_END)
-    if end_id == tokenizer.unk_token_id:
-        tokenizer.add_tokens(ENTITY_MENTION_END)
+    # start_id = tokenizer.convert_tokens_to_ids(ENTITY_MENTION_START)
+    # if start_id == tokenizer.unk_token_id:
+        # tokenizer.add_tokens(ENTITY_MENTION_START)
+    # end_id = tokenizer.convert_tokens_to_ids(ENTITY_MENTION_END)
+    # if end_id == tokenizer.unk_token_id:
+        # tokenizer.add_tokens(ENTITY_MENTION_END)
+    tokenizer.add_special_tokens({
+        'additional_special_tokens': [ENTITY_MENTION_START, ENTITY_MENTION_END],
+    })
 
 
 class EntityTokenizer:
@@ -86,12 +91,11 @@ def _encode_mention(data, tokenizer):
     left_tokens = left_tokens[-left_size:]
     right_tokens = right_tokens[:right_size]
     tokens = left_tokens + mention_tokens + right_tokens
-    mention_encoding = tokenizer(
-        tokens,
+    mention_encoding = tokenizer.encode_plus(
+        text=tokens,
         add_special_tokens=True,
         padding='max_length',
         truncation=True,
-        is_split_into_words=True,
         return_tensors='pt',
     )
     mention_encoding = {k: v.squeeze(0) for k, v in mention_encoding.items()}
@@ -145,19 +149,39 @@ class ELDataset(torch.utils.data.Dataset):
             pickle.dump(state_dict, f)
 
 
+def streaming_shuffle(iterable, chunk_size=32768):
+    # TODO: Test that this works with multiprocessing
+    chunks = [iter(iterable)] * chunk_size
+    for chunk in zip(*chunks):
+        chunk = list(chunk)
+        random.shuffle(chunk)
+        for element in chunk:
+            yield element
+
+
 class ELIterableDataset(torch.utils.data.IterableDataset):
-    def __init__(self, fname, tokenizer, entity_tokenizer, rank, world_size):
+    def __init__(
+            self,
+            fname,
+            tokenizer,
+            entity_tokenizer,
+            rank,
+            world_size,
+            shuffle=False,
+    ):
         super().__init__()
         self._fname = fname
         self._tokenizer = tokenizer
         self._entity_tokenizer = entity_tokenizer
         self._rank = rank
         self._world_size = world_size
+        self._shuffle = shuffle
 
     def __iter__(self):
         def generator():
             worker_info = torch.utils.data.get_worker_info()
             with open(self._fname, 'r') as f:
+                iter_ = streaming_shuffle(f) if self._shuffle else f
                 for i, line in enumerate(f):
                     # Ensures data isn't repeated across processes
                     if self._world_size is not None:

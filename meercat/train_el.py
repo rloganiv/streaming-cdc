@@ -50,7 +50,14 @@ def main(args):
         )
         world_size = torch.distributed.get_world_size()
     is_main_process = args.local_rank in [-1, 0]
-    logging.basicConfig(level=logging.INFO if is_main_process else logging.WARN)
+    if args.debug:
+        main_level = logging.DEBUG
+        level = logging.DEBUG
+    else:
+        main_level = logging.INFO
+        level = logging.WARN
+
+    logging.basicConfig(level=main_level if is_main_process else level)
     logger.warning('Rank: %s - World Size: %s', args.local_rank, world_size)
 
     # Basic initialization stuff
@@ -153,6 +160,8 @@ def main(args):
             if args.local_rank in [-1, 0]:
                 train_loader = tqdm(train_loader, file=sys.stdout)
             for i, model_inputs in enumerate(train_loader):
+                if i == 0:
+                    logger.debug('First sentence: %s', tokenizer.decode(model_inputs['input_ids'][0]))
                 n_iter += 1
                 model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
                 with torch.cuda.amp.autocast(enabled=args.fp16):
@@ -162,12 +171,14 @@ def main(args):
                 total += logits.size(0)
                 _, preds = torch.max(logits, dim=-1)
                 correct += preds.eq(0).sum()
+                scaler.scale(loss).backward()
+
                 if i % args.accumulation_steps == 0:
-                    scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad()
-                if not i % 100 and i != 0:
+
+                if not i % args.log_every and i != 0:
                     # If distrubuted, then need to accumulate results across
                     # processes.
                     if args.local_rank != -1:
@@ -240,15 +251,15 @@ def main(args):
             true_clusters.append(labels)
     embeddings = torch.cat(embeddings, dim=0)
     true_clusters = torch.cat(true_clusters, dim=0)
-    # for i, (true_cluster, embedding) in enumerate(zip(true_clusters, embeddings)):
-        # embedding_str = '\t'.join(str(i) for i in embedding.tolist())
-        # print(f'{i}\t{true_cluster.item()}\t{embedding_str}')
+    for i, (true_cluster, embedding) in enumerate(zip(true_clusters, embeddings)):
+        embedding_str = '\t'.join(str(x) for x in embedding.tolist())
+        print(f'{i}\t{true_cluster.item()}\t{embedding_str}')
 
-    logger.info('Clustering embeddings')
-    pred_clusters = cluster(embeddings, threshold=args.threshold)
+    # logger.info('Clustering embeddings')
+    # pred_clusters = cluster(embeddings, threshold=args.threshold)
 
-    for t, p in zip(true_clusters, pred_clusters):
-        print('%i, %i' % (t.item(), p.item()))
+    # for t, p in zip(true_clusters, pred_clusters):
+        # print('%i, %i' % (t.item(), p.item()))
 
 
 if __name__ == '__main__':
@@ -265,6 +276,7 @@ if __name__ == '__main__':
     parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--accumulation_steps', type=int, default=1)
     parser.add_argument('--max_length', type=int, default=128)
+    parser.add_argument('--log_every', type=int, default=100)
 
     # Model
     parser.add_argument('--model_name', type=str, required=True)
@@ -282,6 +294,8 @@ if __name__ == '__main__':
     # Distributed
     parser.add_argument('--local_rank', type=int, default=-1)
     parser.add_argument('--model_parallel', action='store_true')
+
+    parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
 

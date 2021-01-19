@@ -152,8 +152,8 @@ class ELDataset(torch.utils.data.Dataset):
 def streaming_shuffle(iterable, chunk_size=32768):
     # TODO: Test that this works with multiprocessing
     chunks = [iter(iterable)] * chunk_size
-    for chunk in zip(*chunks):
-        chunk = list(chunk)
+    for chunk in itertools.zip_longest(*chunks, fillvalue=None):
+        chunk = [x for x in chunk if x is not None]
         random.shuffle(chunk)
         for element in chunk:
             yield element
@@ -182,7 +182,7 @@ class ELIterableDataset(torch.utils.data.IterableDataset):
             worker_info = torch.utils.data.get_worker_info()
             with open(self._fname, 'r') as f:
                 iter_ = streaming_shuffle(f) if self._shuffle else f
-                for i, line in enumerate(f):
+                for i, line in enumerate(iter_):
                     # Ensures data isn't repeated across processes
                     if self._world_size is not None:
                         if (i % self._world_size) != self._rank:

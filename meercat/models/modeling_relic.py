@@ -82,10 +82,14 @@ class RelicModel(transformers.BertPreTrainedModel):
                 negatives.append(batch_negatives)
             if self.random_negatives > 0:
                 upper_bound = self.entity_embeddings.num_embeddings
+                if self.random_negatives > upper_bound:
+                    num_samples = upper_bound
+                else:
+                    num_samples = self.random_negatives
                 if counts is None:
                     random_samples = torch.randint(
                         upper_bound,
-                        size=(labels.size(0), 2047),
+                        size=(labels.size(0), num_samples),
                         device=labels.device,
                     )
                 else:
@@ -94,7 +98,7 @@ class RelicModel(transformers.BertPreTrainedModel):
                     )
                     random_samples = torch.multinomial(
                         counts,
-                        num_samples=self.random_negatives,
+                        num_samples=num_samples,
                         replacement=False,
                     )
                 # Ensure that true label cannot be a random sample
@@ -104,19 +108,26 @@ class RelicModel(transformers.BertPreTrainedModel):
             indices = indices.to(self.entity_embeddings.weight.device)  # Handles model parallel?
             entity_embeddings = self.entity_embeddings(indices)
             entity_embeddings = entity_embeddings.to(input_ids.device)  # Handles model parallel?
+            entity_embeddings = F.normalize(entity_embeddings, dim=-1)
+            score_mask = indices.eq(0)
+            # (batch_size, num_entities)
+            scores = self.scaling_constant * torch.einsum(
+                'bd,bsd->bs',
+                context_embedding,
+                entity_embeddings,
+            )
+            scores[score_mask] = -1e32
         else:
             # (num_entities, embedding_dim)
             # entity_embeddings = self.entity_embeddings.weight
             # TODO: Something less hacky
-            entity_embeddings = context_embedding.clone().unsqueeze(1)
-        entity_embeddings = F.normalize(entity_embeddings, dim=-1)
-
-        # (batch_size, num_entities)
-        scores = self.scaling_constant * torch.einsum(
-            'bd,bsd->bs',
-            context_embedding,
-            entity_embeddings,
-        )
+            # entity_embeddings = context_embedding.clone().unsqueeze(1)
+            # batch_size
+            # score_mask = entity_embeddings.new_ones(
+                # context_embedding.size(0),
+                # self.entity_embeddings.num_embeddings,
+                # dtype=torch.bool)
+            scores = None
 
         loss = None
         if labels is not None:

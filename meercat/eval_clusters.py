@@ -1,5 +1,6 @@
 import argparse
 import collections
+import statistics
 
 import scipy.sparse as sparse
 from scipy.optimize import linear_sum_assignment
@@ -49,6 +50,10 @@ def main(args):
             pred_lookup[i] = pred_clusters[p]
             pred_muc_lookup[i] = p
     total = i + 1  # You suck at coding!
+    median_size = statistics.median(len(x) for x in true_clusters)
+    print(f'True clusters: {len(true_clusters)}')
+    print(f'Median size: {median_size}')
+    print(f'Pred clusters: {len(pred_clusters)}')
 
     # Do MUC!
     precision_numerator = 0
@@ -94,8 +99,8 @@ def main(args):
     scores = phi_4(k, r)
     row_opt, col_opt = linear_sum_assignment(scores, maximize=True)
     numerator = scores[row_opt, col_opt].sum()
-    ceaf_precision = numerator / len(pred_clusters)
-    ceaf_recall = numerator / len(true_clusters)
+    ceaf_precision = numerator / len(true_clusters)
+    ceaf_recall = numerator / len(pred_clusters)
     ceaf_f1 = 2 * ceaf_precision * ceaf_recall / (ceaf_precision + ceaf_recall)
     print(f'CEAF-e Precision: {ceaf_precision}')
     print(f'CEAF-e Recall: {ceaf_recall}')
@@ -110,9 +115,11 @@ def main(args):
         b3_f1,
         ceaf_precision,
         ceaf_recall,
-        ceaf_f1
+        ceaf_f1,
+        len(pred_clusters),
+        # statistics.median(len(x) for x in pred_clusters),
     ])
-    print(line)
+    print(f'{line}')
 
 
 if __name__ == '__main__':

@@ -62,12 +62,13 @@ def leaves(root):
     return leaves
 
 
-def compute_score(node):
+def compute_score(node, dot_prod=False):
     with torch.no_grad():
         left_embedding = node.children[0].embedding / node.children[0].n_leaves
-        left_embedding /= torch.norm(left_embedding)
         right_embedding = node.children[1].embedding / node.children[1].n_leaves
-        right_embedding /= torch.norm(right_embedding)
+        if not dot_prod:
+            left_embedding /= torch.norm(left_embedding)
+            right_embedding /= torch.norm(right_embedding)
         return torch.dot(left_embedding, right_embedding)
 
 
@@ -86,7 +87,7 @@ def main(args):
         else:
             node.embedding = sum(x.embedding for x in node.children)
             node.n_leaves = sum(x.n_leaves for x in node.children)
-            node.score = compute_score(node)
+            node.score = compute_score(node, args.dot_prod)
 
     queue = [root]
     i = 0
@@ -108,6 +109,7 @@ if __name__ == '__main__':
     parser.add_argument('--embeddings', type=str)
     parser.add_argument('--output', type=str)
     parser.add_argument('--threshold', type=float)
+    parser.add_argument('-d', '--dot_prod', action='store_true')
     args = parser.parse_args()
 
     main(args)

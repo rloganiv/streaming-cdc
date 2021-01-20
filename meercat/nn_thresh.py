@@ -62,7 +62,8 @@ def main(args):
     logger.info('Clustering')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     embeddings = torch.tensor(embeddings, dtype=torch.float32, device=device)
-    embeddings /= torch.norm(embeddings, dim=-1, keepdim=True)
+    if not args.dot_prod:
+        embeddings /= torch.norm(embeddings, dim=-1, keepdim=True)
     entity_ids = torch.tensor(entity_ids, dtype=torch.int64, device=device)
     if args.threshold:
         threshold = args.threshold
@@ -82,6 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('--input', type=str, required=True)
     parser.add_argument('--output', type=str, required=True)
     parser.add_argument('--threshold', type=float, default=None)
+    parser.add_argument('-d', '--dot_prod', action='store_true')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)

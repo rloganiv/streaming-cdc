@@ -1,4 +1,6 @@
+"""Utilities."""
 import csv
+import collections
 import itertools
 import json
 import logging
@@ -192,4 +194,57 @@ class ELIterableDataset(torch.utils.data.IterableDataset):
                     model_inputs['labels'] = self._entity_tokenizer(data['entity_id'])
                     yield model_inputs
         return generator()
+
+
+class APIterableDataset(torch.utils.data.IterableDataset):
+    def __init__(
+        self,
+        entity_ids,
+        buckets,
+        tokenizer,
+        rank,
+        world_size,
+    ):
+        super().__init__()
+        self._entity_ids = entity_ids
+        self._buckets = buckets
+        self._tokenizer = tokenizer
+        self._rank = rank
+        self._world_size = world_size
+
+    @classmethod
+    def load(cls, fname, tokenizer, rank, world_size):
+        entity_ids = collections.Counter()
+        buckets = collections.defaultdict(list)
+        with open(fname, 'r') as f:
+            for line in f:
+                data = json.loads(line)
+                entity_ids[data['entity_id']] += 1
+                buckets[data['entity_id']].append(data)
+        return cls(entity_ids, buckets, tokenizer, rank, world_size)
+
+    def __iter__(self):
+        # Entities w/ more than 1 mention
+        multi_mentions = [x for x, y in self._entity_ids.items() if y > 1]
+        choices = list(self._entity_ids.keys())
+        for i, pos_entity_id in enumerate(multi_mentions):
+            # Ensures data isn't repeated across processes
+            if self._world_size is not None:
+                if (i % self._world_size) != self._rank:
+                    continue
+            # Select two mentions from positive entity bucket
+            pos_1, pos_2 = random.sample(self._buckets[pos_entity_id], 2)
+
+            # Select a negative entity id at random
+            neg_entity_id = random.choice(choices)
+            while neg_entity_id == pos_entity_id:
+                neg_entity_id = random.choice(choices)
+
+            neg = random.choice(self._buckets[neg_entity_id])
+
+            pos_1 = _encode_mention(pos_1, self._tokenizer)
+            pos_2 = _encode_mention(pos_2, self._tokenizer)
+            neg = _encode_mention(neg, self._tokenizer)
+
+            yield pos_1, pos_2, neg
 

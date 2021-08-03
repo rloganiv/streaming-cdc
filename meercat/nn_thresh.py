@@ -1,5 +1,5 @@
 """
-O(n^2) nearest neighbor threshold clustering algorithm.
+Greedy nearest neighbor clustering for dense embeddings.
 """
 import argparse
 import csv
@@ -12,35 +12,144 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def find_threshold(embeddings, entity_ids):
-    """Find a heuristic threshold based on empirical Bayes classifier."""
-    same_scores = embeddings.new_zeros(101)
-    different_scores = embeddings.new_zeros(101)
-    for i, (embedding, entity_id) in enumerate(zip(embeddings, entity_ids)):
-        with torch.no_grad():
-            scores = torch.mv(embeddings, embedding)
-            same = entity_ids.eq(entity_id)
-            same[i] = False  # Ignore self-similarity
-            same_scores += torch.histc(scores[same], bins=101, min=0.0, max=1.0)
-            different = entity_ids.ne(entity_id)
-            different_scores += torch.histc(scores[different], bins=101, min=0.0, max=1.0)
-    # same_scores /= same_scores.sum()
-    # different_scores /= different_scores.sum()
-    a = same_scores.sum() - same_scores.cumsum(dim=0)
-    b = different_scores.cumsum(dim=0)
-    thresholds = torch.linspace(0.0, 1.0, 101)
-    optimal_threshold = thresholds[torch.argmax(a*b)]
-    logger.info('Optimal threshold: %0.3f', optimal_threshold.item())
-    return optimal_threshold
+class LinkingStrategy:
+    def __init__(self, n, limit, threshold, device):
+        self._i = 0
+        self._n = n
+        self._limit = limit
+        self._threshold = threshold
+        self._device = device
+
+    def __call__(self, row):
+        raise NotImplementedError
+
+
+class Backwards(LinkingStrategy):
+    def __init__(self, n, limit, threshold, device):
+        super().__init__(n, limit, threshold, device)
+
+    def __call__(self, row):
+        row = row.clone().detach()
+        if self._limit is not None:
+            start = max(0, self._i - self._limit)
+        else:
+            start = 0
+        mask = torch.zeros_like(row, dtype=torch.bool)
+        mask[start:self._i+1] = True
+        row[~mask] = -1e32
+        self._i += 1
+        return row > self._threshold
+
+
+class Diversity(LinkingStrategy):
+    def __init__(self, n, limit, threshold, device):
+        super().__init__(n, limit, threshold, device)
+        self._mask = torch.zeros(n, dtype=torch.bool, device=device)
+
+    def __call__(self, row):
+        row = row.clone().detach()
+        self._mask[self._i] = True
+        row[~self._mask] = -1e32
+        # If limit is reached. remove most similar entry to current.
+        if self._mask.sum() == self._limit:
+            removal_index = torch.argmax(row[:self._i])
+            self._mask[removal_index] = False
+        self._i += 1
+        return row > self._threshold
+
+
+class Cache(LinkingStrategy):
+    def __init__(self, n, limit, threshold, device):
+        super().__init__(n, limit, threshold, device)
+        self._mask = torch.zeros(n, dtype=torch.bool, device=device)
+        self._last_seen = torch.zeros(n, dtype=torch.int64, device=device)
+    
+    def __call__(self, row):
+        row = row.clone().detach()
+        self._mask[self._i] = True
+        row[~self._mask] = -1e32
+        out = row > self._threshold
+        self._last_seen[out] = self._i
+        if self._mask.sum() == self._limit:
+            removal_index = torch.argmin(self._last_seen[:self._i])
+            self._mask[removal_index] = False
+            self._last_seen[removal_index] = 1e13
+        self._i += 1
+        return out
+
+
+class DiversityCache(LinkingStrategy):
+    def __init__(self, n, limit, threshold, device):
+        super().__init__(n, limit, threshold, device)
+        self._mask = torch.zeros(n, dtype=torch.bool, device=device)
+        self._last_seen = torch.zeros(n, dtype=torch.int64, device=device)
+
+    def __call__(self, row):
+        row = row.clone().detach()
+        self._mask[self._i] = True
+        row[~self._mask] = -1e32
+        out = row > self._threshold
+        self._last_seen[out] = self._i
+        if self._mask.sum() == self._limit:
+            if out[:self._i].any():
+                removal_index = torch.argmax(row[:self._i])
+            else:
+                removal_index = torch.argmin(self._last_seen[:self._i])
+            self._last_seen[removal_index] = 1e13
+            self._mask[removal_index] = False
+        self._i += 1
+        return out
+
+
+LINKING_STRATEGIES = {
+    'backwards': Backwards,
+    'diversity': Diversity,
+    'cache': Cache,
+    'diversity-cache': DiversityCache,
+}
+
+
+def score(embeddings):
+    logger.info('Scoring')
+    with torch.no_grad():
+        return torch.mm(embeddings, embeddings.transpose(0, 1))
     
 
-def cluster(embeddings, threshold=None):
-    clusters = torch.arange(embeddings.size(0))
-    for i, row in enumerate(embeddings):
-        with torch.no_grad():
-            scores = torch.mv(embeddings, row)
-            clusters[scores > threshold] = clusters[i].clone()
+def find_threshold(scores, linking_strategy, target, max_iters=100):
+    logger.info(f'Finding threshold. Target # of clusts: {target}.')
+    bounds = [0.0, 1.0]
+    n_clusters = -1
+    epsilon = scores.shape[0] / 1000.0
+    logger.info(f'Epsilon: {epsilon}')
+    i = 0
+    while abs(n_clusters - target) > epsilon:
+        threshold = (bounds[0] + bounds[1]) / 2
+        linking_strategy._threshold = threshold
+        clusters = cluster(scores, linking_strategy)
+        n_clusters = len(np.unique(clusters))
+        logger.info(f'Threshold: {threshold}, # of clusts: {n_clusters}')
+        if n_clusters < target:
+            bounds[0] = threshold
+        else:
+            bounds[1] = threshold
     return clusters
+
+
+def cluster(scores, linking_strategy):
+
+    # Back fill adjacency.
+    adjacency_matrix = torch.zeros_like(scores, dtype=torch.bool)
+    n = scores.shape[0]
+    for i, row in enumerate(scores):
+        with torch.no_grad():
+            adjacency_matrix[i] = linking_strategy(row)
+
+    # Transpose adjacency to propagate cluster ids forward.
+    clusters = torch.arange(n, device=scores.device)
+    for i, row in enumerate(adjacency_matrix.transpose(0, 1)):
+        clusters[row] = clusters[i].clone()
+
+    return clusters.cpu().numpy()
 
 
 def main(args):
@@ -58,19 +167,26 @@ def main(args):
                 entity_vocab[entity] = len(entity_vocab)
             entity_id = entity_vocab[entity]
             entity_ids.append(entity_id)
-
-    logger.info('Clustering')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     embeddings = torch.tensor(embeddings, dtype=torch.float32, device=device)
     if not args.dot_prod:
         embeddings /= torch.norm(embeddings, dim=-1, keepdim=True)
     entity_ids = torch.tensor(entity_ids, dtype=torch.int64, device=device)
-    if args.threshold:
-        threshold = args.threshold
+
+    linking_strategy = LINKING_STRATEGIES[args.strategy](
+        n=entity_ids.size(0),
+        limit=args.limit,
+        threshold=args.threshold,
+        device=device,
+    )
+
+    scores = score(embeddings)
+    if args.threshold is not None:
+        clusters = cluster(scores, linking_strategy)
     else:
-        logger.info('No threshold specified, searching for heuristic...')
-        threshold = find_threshold(embeddings, entity_ids)
-    clusters = cluster(embeddings, threshold=threshold)
+        target = len(entity_vocab)
+        clusters = find_threshold(scores, linking_strategy, target)
+
     clusters = clusters.tolist()
     
     with open(args.output, 'w') as g:
@@ -83,6 +199,9 @@ if __name__ == '__main__':
     parser.add_argument('--input', type=str, required=True)
     parser.add_argument('--output', type=str, required=True)
     parser.add_argument('--threshold', type=float, default=None)
+    parser.add_argument('--limit', type=int, default=None)
+    parser.add_argument('--strategy', type=str, default='backwards',
+                        choices=list(LINKING_STRATEGIES.keys()))
     parser.add_argument('-d', '--dot_prod', action='store_true')
     args = parser.parse_args()
 

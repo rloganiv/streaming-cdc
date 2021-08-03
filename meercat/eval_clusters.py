@@ -1,9 +1,28 @@
 import argparse
 import collections
+import json
 import statistics
 
 import scipy.sparse as sparse
 from scipy.optimize import linear_sum_assignment
+
+
+def _get_allowed_mids(train, test, choice):
+    seen_ids = set()
+    with open(train, 'r') as f:
+        for line in f:
+            data = json.loads(line)
+            seen_ids.add(data['entity_id'])
+    allowed_mids = set()
+    with open(test, 'r') as f:
+        for mid, line in enumerate(f):
+            data = json.loads(line)
+            seen = data['entity_id'] in seen_ids
+            if seen and choice == 'seen':
+                allowed_mids.add(mid)
+            elif not seen and choice == 'unseen':
+                allowed_mids.add(mid)
+    return allowed_mids
 
 
 def _create_muc_lookup(clusters):
@@ -36,7 +55,7 @@ def muc(
         partitions = len(set(true_muc_lookup[i] for i in pred_cluster))
         precision_numerator += size - partitions
         precision_denominator += size - 1
-    muc_precision = precision_numerator / precision_denominator
+    muc_precision = precision_numerator / (precision_denominator + 1e-13)
     print(f'MUC Precision: {muc_precision}')
 
     recall_numerator = 0
@@ -46,10 +65,10 @@ def muc(
         partitions = len(set(pred_muc_lookup[i] for i in true_cluster))
         recall_numerator += size - partitions
         recall_denominator += size - 1
-    muc_recall = recall_numerator / recall_denominator
+    muc_recall = recall_numerator / (recall_denominator + 1e-13)
     print(f'MUC Recall: {muc_recall}')
 
-    muc_f1 = 2 * muc_precision * muc_recall / (muc_precision + muc_recall)
+    muc_f1 = 2 * muc_precision * muc_recall / (muc_precision + muc_recall + 1e-13)
     print(f'MUC F1: {muc_f1}')
 
     return muc_precision, muc_recall, muc_f1
@@ -125,20 +144,55 @@ def ceaf_e(
     return ceaf_precision, ceaf_recall, ceaf_f1
 
 
+def error_analysis(
+    true_clusters,
+    pred_clusters,
+):
+    """
+    Count the number of divided vs conflated entities.
+    """
+    # MUC lookups let us map mentions to their cluster ids.
+    true_lookup = _create_muc_lookup(true_clusters)
+    pred_lookup = _create_muc_lookup(pred_clusters)
+
+    # Map each element in the predicted clusters to its true id to get the
+    # number of conflated entities.
+    num_conflated = 0
+    for cluster in pred_clusters.values():
+        num_conflated += len(set(true_lookup[e] for e in cluster)) - 1
+
+    # Map each element in the true clusters to 
+    num_divided = 0
+    for cluster in true_clusters.values():
+        num_divided += len(set(pred_lookup[e] for e in cluster)) - 1
+
+    return num_conflated, num_divided
+
+
 def main(args):
     # Indexed by cluster id
     true_clusters = collections.defaultdict(set)
-    true_lookup = {}
-    true_muc_lookup = {}
     pred_clusters = collections.defaultdict(set)
-    pred_lookup = {}
-    pred_muc_lookup = {}
+
+    if args.train and args.test:
+        allowed_mids = _get_allowed_mids(
+            args.train,
+            args.test,
+            args.choice
+        )
+    else:
+        allowed_mids = None
+
+    total = 0
     with open(args.input, 'r') as f:
-        for i, line in enumerate(f):
+        for mid, line in enumerate(f):
+            if allowed_mids is not None:
+                if mid not in allowed_mids:
+                    continue
             t, p = [x.strip() for x in line.split(',')]
-            true_clusters[t].add(i)
-            pred_clusters[p].add(i)
-    total = i + 1  # You suck at coding!
+            true_clusters[t].add(total)
+            pred_clusters[p].add(total)
+            total += 1
     median_size = statistics.median(len(x) for x in true_clusters)
     print(f'True clusters: {len(true_clusters)}')
     print(f'Median size: {median_size}')
@@ -147,7 +201,6 @@ def main(args):
     muc_precision, muc_recall, muc_f1 = muc(true_clusters, pred_clusters)
     b3_precision, b3_recall, b3_f1 = b3(true_clusters, pred_clusters, total)
     ceaf_precision, ceaf_recall, ceaf_f1 = ceaf_e(true_clusters, pred_clusters, total)
-
 
     line = '\t'.join('%0.3f' % x for x in [
         muc_precision,
@@ -160,6 +213,7 @@ def main(args):
         ceaf_recall,
         ceaf_f1,
         len(pred_clusters),
+        statistics.mean((muc_f1, b3_f1, ceaf_f1)),
         # statistics.median(len(x) for x in pred_clusters),
     ])
     print(f'{line}')
@@ -168,6 +222,10 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('input', type=str)
+    parser.add_argument('--train', type=str, default=None)
+    parser.add_argument('--test', type=str, default=None)
+    parser.add_argument('-c', '--choice', type=str, default=None,
+                        choices=['seen', 'unseen'])
     args = parser.parse_args()
 
     main(args)

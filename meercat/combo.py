@@ -1,8 +1,8 @@
 """
-Feature-based greedy nearest neighbor clustering baseline described in
-Shrimpton et al. 2015
+Clus
 """
 import argparse
+import csv
 import json
 import logging
 import os
@@ -11,6 +11,7 @@ import pickle
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
+import torch
 from tqdm import tqdm
 
 
@@ -20,24 +21,22 @@ logger = logging.getLogger(__name__)
 def score(
     instances,
     vectorizers,
-    weights=(0.8, 0.2)
+    embeddings,
+    weight
 ):
     mentions = [x['mention'] for x in instances]
-    contexts = [' '.join((x['left_context'], x['right_context'])) for x in instances]
 
     logger.info('Encoding mentions.')
     mention_vectors = vectorizers['bigram'].transform(mentions)
-
-    logger.info('Encoding contexts.')
-    context_vectors = vectorizers['context'].transform(contexts)
 
     logger.info('Scoring mentions.')
     mention_scores = linear_kernel(mention_vectors, mention_vectors)
 
     logger.info('Scoring contexts.')
-    context_scores = linear_kernel(context_vectors, context_vectors)
+    with torch.no_grad():
+        context_scores = torch.mm(embeddings, embeddings.transpose(0, 1))
 
-    scores = weights[0] * mention_scores + weights[1] * context_scores
+    scores = weight * mention_scores + (1 - weight) * context_scores.cpu().numpy()
 
     return scores
 
@@ -82,10 +81,28 @@ def main(args):
             entity_ids.append(entity_vocab[data['entity_id']])
     entity_ids = np.array(entity_ids)
 
+    logger.info('Loading embeddings')
+    entity_vocab = {}
+    entity_ids = []
+    embeddings = []
+    with open(args.embeddings, 'r') as f:
+        reader = csv.reader(f, delimiter='\t')
+        for line in reader:
+            uid, entity, *embedding = line
+            embedding = [float(x) for x in embedding]
+            embeddings.append(embedding)
+            if entity not in entity_vocab:
+                entity_vocab[entity] = len(entity_vocab)
+            entity_id = entity_vocab[entity]
+            entity_ids.append(entity_id)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    embeddings = torch.tensor(embeddings, dtype=torch.float32, device=device)
+    # entity_ids = torch.tensor(entity_ids, dtype=torch.int64, device=device)
+
     with open(args.vectorizer, 'rb') as f:
         vectorizers = pickle.load(f)
 
-    scores = score(instances, vectorizers)
+    scores = score(instances, vectorizers, embeddings, weight=args.weight)
     if args.threshold is not None:
         clusters = cluster(scores, args.threshold)
     else:
@@ -100,9 +117,11 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True)
+    parser.add_argument('--vectorizer', type=str, required=True)
+    parser.add_argument('--embeddings', type=str, required=True)
     parser.add_argument('--output', type=str, required=True)
     parser.add_argument('--threshold', type=float, default=None)
-    parser.add_argument('--vectorizer', type=str, required=True)
+    parser.add_argument('--weight', type=float, default=0.5)
     args = parser.parse_args()
     
 

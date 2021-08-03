@@ -1,9 +1,5 @@
 """
 Preprocesses the MedMentions corpus.
-
-Because the corpus does not come pre-split, and pubtator is a kind of annoying
-format, this script serializes the data as a JSONL file where each line is a
-mention.
 """
 import argparse
 import collections
@@ -108,7 +104,7 @@ def date_split(args):
             document.date = _get_publication_date(document)
             if document.date is not None:
                 documents.append(document)
-            time.sleep(0.34)
+            time.sleep(0.03)
     documents.sort(key=lambda x: x.date)
 
     # Magic numbers from original medmentions split.
@@ -119,6 +115,8 @@ def date_split(args):
 
     # Process train mentions
     entity_ids = collections.Counter()
+    document_index = 0
+    mention_index = 0
     with open(args.prefix + 'train.jsonl', 'w') as g:
         for document in train:
             for mention in document.mentions:
@@ -129,9 +127,14 @@ def date_split(args):
                     'right_context': text[mention.end:],
                     'entity_id': mention.entity_id,
                     'type': mention.semantic_types,
+                    'document_index': document_index,
+                    'mention_index': mention_index,
+                    'date': document.date.strftime('%d/%m/%Y')
                 }
                 g.write(json.dumps(json_obj) + '\n')
                 entity_ids[mention.entity_id] += 1
+                mention_index += 1
+            document_index += 1
 
     # Write entity vocab
     counts = sorted(entity_ids.items(), key=lambda x: x[1], reverse=True)
@@ -152,8 +155,13 @@ def date_split(args):
                     'right_context': text[mention.end:],
                     'entity_id': mention.entity_id,
                     'type': mention.semantic_types,
+                    'document_index': document_index,
+                    'mention_index': mention_index,
+                    'date': document.date.strftime('%d/%m/%Y')
                 }
                 g.write(json.dumps(json_obj) + '\n')
+                mention_index += 1
+            document_index += 1
 
     # Process test mentions
     with open(args.prefix + 'test.jsonl', 'w') as g:
@@ -166,8 +174,13 @@ def date_split(args):
                     'right_context': text[mention.end:],
                     'entity_id': mention.entity_id,
                     'type': mention.semantic_types,
+                    'document_index': document_index,
+                    'mention_index': mention_index,
+                    'date': document.date.strftime('%d/%m/%Y')
                 }
                 g.write(json.dumps(json_obj) + '\n')
+                mention_index += 1
+            document_index += 1
 
 
 if __name__ == '__main__':

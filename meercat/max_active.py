@@ -1,3 +1,4 @@
+"""Script for computing the maximum number of active entities."""
 import argparse
 import json
 

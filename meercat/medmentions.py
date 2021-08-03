@@ -1,7 +1,9 @@
+"""Code for processing medmentions data."""
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 import sys
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -19,6 +21,7 @@ class Document:
     title: str
     abstract: str
     mentions: List[Mention]
+    date: Optional[datetime] = None
 
     @classmethod
     def from_lines(cls, lines):

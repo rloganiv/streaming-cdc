@@ -48,7 +48,7 @@ def load_metadata(f):
 def load_dendrogram(f):
     lookup = {}
     reader = csv.reader(f, delimiter='\t')
-    for uid, parent_uid, _ in reader:
+    for uid, parent_uid, label in reader:
         node = Node(uid=uid)
         lookup[uid] = node
         if parent_uid == 'None':
@@ -56,22 +56,12 @@ def load_dendrogram(f):
         else:
             node.parent = lookup[parent_uid]
             node.parent.children.append(node)
+        if label != 'None':
+            node.histogram[label] += 1
     return root 
 
 
-def num_pairs(metadata, cluster_by):
-    """Computes the number of pairs, e.g., |P*|"""
-    clusters = defaultdict(set)
-    for key, value in metadata.items():
-        clusters[value[cluster_by]].add(key)
-    p_star = 0
-    for cluster in clusters.values():
-        size = len(cluster)
-        p_star += size * (size - 1) / 2
-    return p_star
-
-
-def accumulate_purity(root, metadata, cluster_by):
+def accumulate_purity(root, metadata=None, cluster_by=None):
     summand = 0
     for node in reversed(list(traverse(root))):
         if node.children:
@@ -85,26 +75,31 @@ def accumulate_purity(root, metadata, cluster_by):
                 pairs = node.children[0].histogram[key] * node.children[1].histogram[key]
                 summand += pairs * node.histogram[key] / n_leaves
         else:
-            # Get metadata for leaf node
-            cluster = metadata[node.uid][cluster_by]
-            node.histogram[cluster] = 1
-    return summand
+            # Get metadata for leaf node if not already added.
+            if metadata is not None:
+                cluster = metadata[node.uid][cluster_by]
+                node.histogram[cluster] = 1
+    # Compute normalization constant
+    p_star = sum(x * (x - 1) / 2 for x in root.histogram.values())
+    return summand / p_star
 
 
 def main(args):
-    with open(args.medmentions_path, 'r') as f:
-        metadata = load_metadata(f)
+    if args.medmentions_path is not None:
+        with open(args.medmentions_path, 'r') as f:
+            metadata = load_metadata(f)
+    else:
+        metadata = None
     with open(args.dendrogram_path, 'r') as f:
         root = load_dendrogram(f)
-    p_star = num_pairs(metadata, args.cluster_by)
-    summand = accumulate_purity(root, metadata, args.cluster_by)
-    print(f'Dendrogram Purity: {summand / p_star: 0.4f}')
+    purity = accumulate_purity(root, metadata, args.cluster_by)
+    print(f'Dendrogram Purity: {purity: 0.4f}')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--medmentions-path', type=str)
-    parser.add_argument('-d', '--dendrogram-path', type=str)
+    parser.add_argument('-d', '--dendrogram-path', type=str, required=True)
+    parser.add_argument('-m', '--medmentions-path', type=str, default=None)
     parser.add_argument('-c', '--cluster-by', type=str,
                         choices=('semantic_type', 'entity_id'))
     args = parser.parse_args()
